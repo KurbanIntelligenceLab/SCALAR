@@ -1,0 +1,47 @@
+# Core PyTorch and PyTorch Geometric
+torch>=2.0.0
+torch-geometric>=2.3.0
+torch-scatter>=2.1.0
+torch-sparse>=0.6.17
+torch-cluster>=1.6.1
+torch-spline-conv>=1.2.1
+
+# Scientific computing
+numpy>=1.21.0
+scipy>=1.9.0
+pandas>=1.5.0
+
+# Machine learning and transformers
+transformers>=4.21.0
+tokenizers>=0.13.0
+
+# Data processing and visualization
+tqdm>=4.64.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Chemistry and materials science
+ase>=3.22.0
+spglib>=2.0.0
+pymatgen>=2022.10.0
+
+# Additional utilities
+pathlib2>=2.3.0
+multiprocessing-logging>=0.3.0
+
+# Development tools (optional)
+black>=23.0.0
+isort>=5.12.0
+
+# Jupyter notebook support (optional)
+jupyter>=1.0.0
+ipykernel>=6.0.0
+
+# Memory profiling (optional)
+memory-profiler>=0.60.0
+psutil>=5.9.0
+
+# CUDA support (if available)
+# Note: Install appropriate CUDA version based on your system
+# For CUDA 11.8: torch==2.0.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+# For CUDA 12.1: torch==2.0.0+cu121 -f https://download.pytorch.org/whl/torch_stable.html

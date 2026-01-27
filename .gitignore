@@ -2,6 +2,9 @@
 __pycache__/
 *.py[codz]
 *$py.class
+analysis_codes/
+results*/
+results.zip
 
 # C extensions
 *.so
