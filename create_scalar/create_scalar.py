@@ -35,6 +35,11 @@ from create_scalar.config import QUATERNIONS_SUBDIR, UNIT_CELLS_SUBDIR
 from create_scalar.generate_quaternions import run_scalar_quaternions
 
 
+def _is_macos_metadata(path: Path) -> bool:
+    """Check if path is a macOS metadata file (AppleDouble or __MACOSX)."""
+    return path.name.startswith("._") or "__MACOSX" in path.parts
+
+
 def extract_cifs(raw_data_dir: Path, output_dir: Path) -> int:
     """Extract all CIF files from raw_data to output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -45,9 +50,11 @@ def extract_cifs(raw_data_dir: Path, output_dir: Path) -> int:
 
     for root, _, files in os.walk(search_dir):
         for f in files:
-            if f.lower().endswith(".cif"):
-                shutil.copy2(os.path.join(root, f), output_dir / f)
-                count += 1
+            if f.lower().endswith(".cif") and not f.startswith("._"):
+                full_path = Path(root) / f
+                if "__MACOSX" not in full_path.parts:
+                    shutil.copy2(os.path.join(root, f), output_dir / f)
+                    count += 1
     return count
 
 
@@ -64,8 +71,10 @@ def extract_xyz_files(raw_data_dir: Path, output_dir: Path) -> int:
 
     for root, _, files in os.walk(search_dir):
         for file in files:
-            if file.lower().endswith(".xyz"):
+            if file.lower().endswith(".xyz") and not file.startswith("._"):
                 xyz_path = Path(root) / file
+                if "__MACOSX" in xyz_path.parts:
+                    continue
                 dest_path = output_dir / file
                 if dest_path.exists() and xyz_path != dest_path:
                     rel_path = xyz_path.relative_to(search_dir)
@@ -152,7 +161,10 @@ def create_scalar(raw_data_dir: str = "scalar_raw", output_dir: str = "scalar") 
             if xyz_count == 0:
                 print("  [WARN] No XYZ files found, skipping quaternion generation")
             else:
-                xyz_files = sorted(temp_materials.rglob("*.xyz"))
+                xyz_files = sorted(
+                    f for f in temp_materials.rglob("*.xyz")
+                    if not _is_macos_metadata(f)
+                )
                 run_scalar_quaternions(
                     xyz_files,
                     quaternions_dir,

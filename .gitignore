@@ -5,7 +5,8 @@ __pycache__/
 analysis_codes/
 results*/
 results.zip
-
+figs
+scalar
 # C extensions
 *.so
 
