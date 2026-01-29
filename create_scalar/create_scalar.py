@@ -162,7 +162,8 @@ def create_scalar(raw_data_dir: str = "scalar_raw", output_dir: str = "scalar") 
                 print("  [WARN] No XYZ files found, skipping quaternion generation")
             else:
                 xyz_files = sorted(
-                    f for f in temp_materials.rglob("*.xyz")
+                    f
+                    for f in temp_materials.rglob("*.xyz")
                     if not _is_macos_metadata(f)
                 )
                 run_scalar_quaternions(

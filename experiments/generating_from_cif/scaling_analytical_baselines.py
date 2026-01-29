@@ -25,6 +25,12 @@ Usage:
     --out results/predictions_analytical.jsonl \\
     --gold results/task_1_cot_llm/1shot/gold.jsonl \\
     [--score-out results/score_analytical.json]
+
+Layout (CIF + XYZ) and matching gold:
+  - CIFs: scalar/unit_cells/{Material}.cif  (e.g. Ag.cif -> material \"Ag\")
+  - XYZ:  scalar/quaternions/{Material}/R{r}/xyz/rot_0.xyz
+  Use \"build-gold\" with the same roots so gold material IDs match. Then run
+  and score with that gold.
 """
 
 from __future__ import annotations
@@ -42,18 +48,26 @@ import numpy as np
 
 try:
     from scipy.spatial.distance import pdist
+    from scipy.spatial import ConvexHull, cKDTree
+
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
     pdist = None
-    warnings.warn("scipy not available – NN distance from CIF may use fallback")
+    ConvexHull = cKDTree = None  # type: ignore[misc, assignment]
+    warnings.warn(
+        "scipy not available – NN distance from CIF / build-gold may be limited"
+    )
 
 try:
     from ase.io import read as ase_read
+    from ase.data import atomic_masses
+
     ASE_AVAILABLE = True
 except ImportError:
     ASE_AVAILABLE = False
-    warnings.warn("ASE not available – CIF parsing uses fallback")
+    atomic_masses = None  # type: ignore[misc, assignment]
+    warnings.warn("ASE not available – CIF parsing / build-gold uses fallback")
 
 
 def _round_float(value: Optional[float], ndigits: int = 5) -> Optional[float]:
@@ -67,25 +81,101 @@ def _round_float(value: Optional[float], ndigits: int = 5) -> Optional[float]:
 # -----------------------------------------------------------------------------
 
 ATOMIC_MASSES: Dict[str, float] = {
-    "H": 1.008, "He": 4.003, "Li": 6.941, "Be": 9.012, "B": 10.81,
-    "C": 12.01, "N": 14.01, "O": 16.00, "F": 19.00, "Ne": 20.18,
-    "Na": 22.99, "Mg": 24.31, "Al": 26.98, "Si": 28.09, "P": 30.97,
-    "S": 32.07, "Cl": 35.45, "Ar": 39.95, "K": 39.10, "Ca": 40.08,
-    "Sc": 44.96, "Ti": 47.87, "V": 50.94, "Cr": 52.00, "Mn": 54.94,
-    "Fe": 55.85, "Co": 58.93, "Ni": 58.69, "Cu": 63.55, "Zn": 65.38,
-    "Ga": 69.72, "Ge": 72.63, "As": 74.92, "Se": 78.97, "Br": 79.90,
-    "Kr": 83.80, "Rb": 85.47, "Sr": 87.62, "Y": 88.91, "Zr": 91.22,
-    "Nb": 92.91, "Mo": 95.95, "Tc": 98.00, "Ru": 101.1, "Rh": 102.9,
-    "Pd": 106.4, "Ag": 107.9, "Cd": 112.4, "In": 114.8, "Sn": 118.7,
-    "Sb": 121.8, "Te": 127.6, "I": 126.9, "Xe": 131.3, "Cs": 132.9,
-    "Ba": 137.3, "La": 138.9, "Ce": 140.1, "Pr": 140.9, "Nd": 144.2,
-    "Pm": 145.0, "Sm": 150.4, "Eu": 152.0, "Gd": 157.3, "Tb": 158.9,
-    "Dy": 162.5, "Ho": 164.9, "Er": 167.3, "Tm": 168.9, "Yb": 173.0,
-    "Lu": 175.0, "Hf": 178.5, "Ta": 180.9, "W": 183.8, "Re": 186.2,
-    "Os": 190.2, "Ir": 192.2, "Pt": 195.1, "Au": 197.0, "Hg": 200.6,
-    "Tl": 204.4, "Pb": 207.2, "Bi": 209.0, "Po": 209.0, "At": 210.0,
-    "Rn": 222.0, "Fr": 223.0, "Ra": 226.0, "Ac": 227.0, "Th": 232.0,
-    "Pa": 231.0, "U": 238.0, "Np": 237.0, "Pu": 244.0, "Am": 243.0,
+    "H": 1.008,
+    "He": 4.003,
+    "Li": 6.941,
+    "Be": 9.012,
+    "B": 10.81,
+    "C": 12.01,
+    "N": 14.01,
+    "O": 16.00,
+    "F": 19.00,
+    "Ne": 20.18,
+    "Na": 22.99,
+    "Mg": 24.31,
+    "Al": 26.98,
+    "Si": 28.09,
+    "P": 30.97,
+    "S": 32.07,
+    "Cl": 35.45,
+    "Ar": 39.95,
+    "K": 39.10,
+    "Ca": 40.08,
+    "Sc": 44.96,
+    "Ti": 47.87,
+    "V": 50.94,
+    "Cr": 52.00,
+    "Mn": 54.94,
+    "Fe": 55.85,
+    "Co": 58.93,
+    "Ni": 58.69,
+    "Cu": 63.55,
+    "Zn": 65.38,
+    "Ga": 69.72,
+    "Ge": 72.63,
+    "As": 74.92,
+    "Se": 78.97,
+    "Br": 79.90,
+    "Kr": 83.80,
+    "Rb": 85.47,
+    "Sr": 87.62,
+    "Y": 88.91,
+    "Zr": 91.22,
+    "Nb": 92.91,
+    "Mo": 95.95,
+    "Tc": 98.00,
+    "Ru": 101.1,
+    "Rh": 102.9,
+    "Pd": 106.4,
+    "Ag": 107.9,
+    "Cd": 112.4,
+    "In": 114.8,
+    "Sn": 118.7,
+    "Sb": 121.8,
+    "Te": 127.6,
+    "I": 126.9,
+    "Xe": 131.3,
+    "Cs": 132.9,
+    "Ba": 137.3,
+    "La": 138.9,
+    "Ce": 140.1,
+    "Pr": 140.9,
+    "Nd": 144.2,
+    "Pm": 145.0,
+    "Sm": 150.4,
+    "Eu": 152.0,
+    "Gd": 157.3,
+    "Tb": 158.9,
+    "Dy": 162.5,
+    "Ho": 164.9,
+    "Er": 167.3,
+    "Tm": 168.9,
+    "Yb": 173.0,
+    "Lu": 175.0,
+    "Hf": 178.5,
+    "Ta": 180.9,
+    "W": 183.8,
+    "Re": 186.2,
+    "Os": 190.2,
+    "Ir": 192.2,
+    "Pt": 195.1,
+    "Au": 197.0,
+    "Hg": 200.6,
+    "Tl": 204.4,
+    "Pb": 207.2,
+    "Bi": 209.0,
+    "Po": 209.0,
+    "At": 210.0,
+    "Rn": 222.0,
+    "Fr": 223.0,
+    "Ra": 226.0,
+    "Ac": 227.0,
+    "Th": 232.0,
+    "Pa": 231.0,
+    "U": 238.0,
+    "Np": 237.0,
+    "Pu": 244.0,
+    "Am": 243.0,
 }
 
 
@@ -180,7 +270,7 @@ class AnalyticalBaseline:
             return out
 
         cif = self.cif_data[material]
-        sphere_vol = (4 / 3) * np.pi * (r_value ** 3)
+        sphere_vol = (4 / 3) * np.pi * (r_value**3)
         v_cell = cif["volume"]
         z = cif["n_atoms_unit_cell"]
         packing = 0.74
@@ -282,6 +372,136 @@ def run_cif_only(
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             written += 1
 
+    return written
+
+
+# -----------------------------------------------------------------------------
+# Build gold from XYZ (same layout as CIF: unit_cells + quaternions)
+# -----------------------------------------------------------------------------
+
+R_DIR_RE = re.compile(r"^R(\d+)$")
+R_SPLITS = {"ID": [13, 15, 17, 20, 24, 27], "OOD": [10, 11, 29, 30]}
+
+
+def _split_for_r(r_val: int) -> str:
+    if r_val in R_SPLITS["ID"]:
+        return "ID"
+    if r_val in R_SPLITS["OOD"]:
+        return "OOD"
+    return "train"
+
+
+def _available_r_values(xyz_dir: Path) -> List[int]:
+    out: List[int] = []
+    for c in xyz_dir.iterdir():
+        if not c.is_dir():
+            continue
+        m = R_DIR_RE.match(c.name)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(set(out))
+
+
+def _compute_properties_from_xyz(xyz_path: Path) -> Dict[str, Any]:
+    """Same property computation as zeroshot gold (ASE + scipy)."""
+    if not ASE_AVAILABLE or atomic_masses is None:
+        raise RuntimeError("ASE required for build-gold")
+    atoms = ase_read(str(xyz_path))
+    pos = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    nums = atoms.get_atomic_numbers()
+    n = len(syms)
+    comp: Dict[str, int] = {}
+    for s in syms:
+        comp[s] = comp.get(s, 0) + 1
+    min_nn = mean_nn = median_nn = None
+    if n >= 2 and cKDTree is not None:
+        tree = cKDTree(pos)
+        d, _ = tree.query(pos, k=2)
+        nn = d[:, 1]
+        min_nn = float(np.min(nn))
+        mean_nn = float(np.mean(nn))
+        median_nn = float(np.median(nn))
+    mass = float(np.sum(atomic_masses[nums]))
+    vol = den = None
+    if n >= 4 and ConvexHull is not None:
+        try:
+            h = ConvexHull(pos)
+            vol = float(h.volume)
+            if vol > 0:
+                den = float(mass * 1.66053906660e-24 / (vol * 1.0e-24))
+        except Exception:
+            pass
+    return {
+        "num_atoms": int(n),
+        "composition": comp,
+        "min_nn_distance": _round_float(min_nn),
+        "mean_nn_distance": _round_float(mean_nn),
+        "median_nn_distance": _round_float(median_nn),
+        "mass_amu": _round_float(mass),
+        "convex_hull_volume": _round_float(vol),
+        "density": _round_float(den),
+    }
+
+
+def _iter_materials(cif_root: Path, xyz_root: Path) -> List[tuple[str, Path, Path]]:
+    out: List[tuple[str, Path, Path]] = []
+    for p in sorted(cif_root.glob("*.cif")):
+        mat = p.stem
+        xd = xyz_root / mat
+        if xd.exists():
+            out.append((mat, p, xd))
+    return out
+
+
+def build_gold(
+    cif_root: Path,
+    xyz_root: Path,
+    r_values: Optional[List[int]],
+    out_path: Path,
+) -> int:
+    """
+    Build gold JSONL from XYZ (rot_0.xyz).
+    Materials = CIF stems; XYZ under xyz_root/{material}/R{r}/xyz/rot_0.xyz.
+    IDs match CIF-only run, so scoring works.
+    """
+    materials = _iter_materials(cif_root, xyz_root)
+    if not materials:
+        return 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    skipped = 0
+    with out_path.open("w", encoding="utf-8") as f:
+        for material, _cif_path, xyz_dir in materials:
+            r_list = r_values if r_values else _available_r_values(xyz_dir)
+            items: List[Dict[str, Any]] = []
+            for r in r_list:
+                if _split_for_r(r) == "train":
+                    continue
+                xyz_path = xyz_dir / f"R{r}" / "xyz" / "rot_0.xyz"
+                if not xyz_path.exists():
+                    skipped += 1
+                    continue
+                try:
+                    gt = _compute_properties_from_xyz(xyz_path)
+                except Exception:
+                    skipped += 1
+                    continue
+                items.append(
+                    {
+                        "r_value": int(r),
+                        "split": _split_for_r(r),
+                        "xyz_path": str(xyz_path),
+                        "ground_truth": gt,
+                    }
+                )
+            if not items:
+                continue
+            rec = {"id": material, "material": material, "items": items}
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            written += 1
+    if skipped:
+        print(f"[build-gold] Skipped {skipped} missing/failed xyz", file=sys.stderr)
     return written
 
 
@@ -438,12 +658,16 @@ def _analyze_and_report_errors(
         }
 
     print("\n--- Analysis (predictions vs gold) ---")
-    print(f"  total gold: {report['total']}  scored: {report['scored']}  missing: {report['missing_predictions']}")
+    print(
+        f"  total gold: {report['total']}  scored: {report['scored']}  missing: {report['missing_predictions']}"
+    )
     for f, m in report["field_metrics"].items():
         if "accuracy" in m and m["accuracy"] is not None:
             print(f"  {f}: accuracy = {m['accuracy']:.4f}  (n={m['count']})")
         elif "mae" in m and m["mae"] is not None:
-            print(f"  {f}: MAE = {m['mae']:.4f}  rel_MAE = {m['rel_mae']:.4f}  (n={m['count']})")
+            print(
+                f"  {f}: MAE = {m['mae']:.4f}  rel_MAE = {m['rel_mae']:.4f}  (n={m['count']})"
+            )
     print("---")
 
     if score_out is not None:
@@ -460,7 +684,9 @@ def parse_args() -> argparse.Namespace:
         description="CIF-only baseline: predict nanoparticle properties from CIF + R values (no gold, no XYZ).",
     )
     sub = ap.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("run", help="Run CIF-only baseline and write prediction JSONL.")
+    run = sub.add_parser(
+        "run", help="Run CIF-only baseline and write prediction JSONL."
+    )
     run.add_argument(
         "--cif-root",
         type=Path,
@@ -492,10 +718,38 @@ def parse_args() -> argparse.Namespace:
     )
     run.add_argument("--verbose", action="store_true")
 
-    score = sub.add_parser("score", help="Analyze predictions vs gold only (no CIF run).")
+    score = sub.add_parser(
+        "score", help="Analyze predictions vs gold only (no CIF run)."
+    )
     score.add_argument("--gold", type=Path, required=True, help="Gold JSONL.")
-    score.add_argument("--predictions", type=Path, required=True, help="Predictions JSONL.")
+    score.add_argument(
+        "--predictions", type=Path, required=True, help="Predictions JSONL."
+    )
     score.add_argument("--out", type=Path, default=None, help="Write score JSON here.")
+
+    bg = sub.add_parser(
+        "build-gold",
+        help="Build gold JSONL from XYZ (unit_cells + quaternions). Use same roots as run so IDs match.",
+    )
+    bg.add_argument(
+        "--cif-root",
+        type=Path,
+        default=Path("scalar/unit_cells"),
+        help="CIF directory.",
+    )
+    bg.add_argument(
+        "--xyz-root",
+        type=Path,
+        default=Path("scalar/quaternions"),
+        help="XYZ base (Material/R{r}/xyz/rot_0.xyz).",
+    )
+    bg.add_argument(
+        "--r-values",
+        type=str,
+        default="",
+        help="Comma-separated R values (default: discover from XYZ dirs).",
+    )
+    bg.add_argument("--out", type=Path, required=True, help="Output gold JSONL.")
 
     return ap.parse_args()
 
@@ -511,6 +765,22 @@ def main() -> int:
             print(f"[ERROR] Predictions not found: {args.predictions}", file=sys.stderr)
             return 1
         _analyze_and_report_errors(args.gold, args.predictions, score_out=args.out)
+        return 0
+
+    if args.command == "build-gold":
+        cr = args.cif_root
+        xr = args.xyz_root
+        if not cr.is_dir():
+            print(f"[ERROR] cif-root not found: {cr}", file=sys.stderr)
+            return 1
+        if not xr.is_dir():
+            print(f"[ERROR] xyz-root not found: {xr}", file=sys.stderr)
+            return 1
+        r_vals: Optional[List[int]] = None
+        if getattr(args, "r_values", "") and args.r_values.strip():
+            r_vals = [int(x.strip()) for x in args.r_values.split(",") if x.strip()]
+        n = build_gold(cr, xr, r_vals, args.out)
+        print(f"[OK] Wrote {n} gold lines to {args.out}")
         return 0
 
     if args.command != "run":
@@ -540,14 +810,20 @@ def main() -> int:
     elif getattr(args, "cif_root", None) and args.cif_root is not None:
         root = Path(args.cif_root)
         if not root.is_dir():
-            print(f"[ERROR] CIF root not found or not a directory: {root}", file=sys.stderr)
+            print(
+                f"[ERROR] CIF root not found or not a directory: {root}",
+                file=sys.stderr,
+            )
             return 1
         cif_paths = discover_cif_materials(root)
         if not cif_paths:
             print(f"[ERROR] No *.cif files in {root}", file=sys.stderr)
             return 1
     else:
-        print("[ERROR] Provide either --cif (single file) or --cif-root (directory).", file=sys.stderr)
+        print(
+            "[ERROR] Provide either --cif (single file) or --cif-root (directory).",
+            file=sys.stderr,
+        )
         return 1
 
     n = run_cif_only(cif_paths, r_values, args.out, verbose=args.verbose)
