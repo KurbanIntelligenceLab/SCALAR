@@ -6,11 +6,29 @@ Given a canonical crystal representation, models are required to reason about de
 
 ---
 
+## Resource expectations
+
+**Hardware.** Phase-I carving (`create_scalar/carve.py`) and dataset assembly run on CPU; the largest structures reach approximately 18,000 atoms and complete on a single core in well under a minute. GNN baseline training (`experiments/generating_from_cif/gnn_baselines.py`) uses PyTorch Geometric and benefits from a CUDA GPU; the Dockerfile targets CUDA 12.1. LLM benchmark tasks issue network requests only and require no local GPU or significant CPU.
+
+**Runtime.** Full Phase-I carving and validation across all 83 materials and 21 radii (1,743 structures) completes in a few minutes on 8 parallel worker processes on a standard laptop-class CPU. Quaternion rotation generation to the full ~100,000-structure benchmark is the dominant dataset-build cost and is I/O bound by file writes rather than CPU. LLM benchmark runs are dominated by API round-trip latency (seconds per call) rather than local compute.
+
+**Disk footprint.** The deposited 1,743 base XYZ structures (`scalar_raw/`) total 276.5 MB (mean 158.6 KB per file, measured directly from the deposited files). The full benchmark augments these base structures by rigid rotation to approximately 100,000 total structures, an augmentation factor of 100,000 / 1,743 ≈ 57.4x. Scaling the measured base size by this factor gives a projected disk footprint of approximately **14.8 GiB (15.9 GB)** for the full rotated dataset.
+
+**API cost.** The seven LLM benchmark scripts (`cif_to_properties_zeroshot`, `cif_to_properties_1shot`, `cif_to_properties_3shot`, `reasoning_gap_1shot`, `reasoning_gap_3shot`, `inverse_with_3_possible`, `inverse_with_5_possible`) each issue one API call per (material, model, repeat) combination, with one prompt per material covering all target radii. At the default full-dataset configuration (83 materials, the 10 models in `experiments/benchmark_models.py`, and the N=5 repeats per sample reported in the ESI for the consistency metric), this is 83 x 10 x 5 x 7 = **29,050 API calls**. This count is derived from the script structure and the N=5 repeat count stated in the ESI, not from execution logs, which the repository does not retain; the scripts' own `--repeats` CLI defaults are 3 for the property-prediction and chain-of-thought scripts and 1 for the inverse-retrieval scripts, so a run at those defaults issues correspondingly fewer calls. Using a rough per-call estimate of approximately 1,200 input tokens (CIF text plus prompt template) and approximately 500 output tokens (structured JSON response), this totals approximately 34.9 million input tokens and 14.5 million output tokens across the full benchmark. The dollar cost of these tokens depends entirely on the provider and model pricing in effect at the time of the run (OpenRouter passes through per-model provider pricing that varies by more than 100x between the smallest and largest models in the registry) and is not stated here as a fixed figure.
+
+---
+
 ## Creating the SCALAR dataset
 
 The `create_scalar` pipeline builds the scalar dataset from raw data (directory or zip). It extracts CIFs into `unit_cells/`, extracts XYZ files into a temporary `materials/` layout, then runs quaternion-based rotation generation (using `create_scalar.config` and `ScalarQuaternionGenerator`) to produce rotated structures in `quaternions/`.
 
 ### Input: `scalar_raw`
+
+The seed inputs are archived on Zenodo, DOI [10.5281/zenodo.20631920](https://doi.org/10.5281/zenodo.20631920), which always resolves to the latest version. Download `scalar_raw.zip` from there into the repository root before running the pipeline:
+
+```bash
+curl -L -o scalar_raw.zip "https://zenodo.org/records/22234497/files/scalar_raw.zip?download=1"
+```
 
 - **Directory** `scalar_raw/` or **zip** `scalar_raw.zip`.
 - **CIFs:** in `scalar_raw/cifs/` or at the root of `scalar_raw/`.
@@ -44,6 +62,11 @@ python -m create_scalar.create_scalar --raw-data scalar_raw.zip --output scalar
 
 # Short flags
 python -m create_scalar.create_scalar -r scalar_raw -o scalar
+
+# Phase-I: carve base XYZ structures directly from the deposited CIFs instead of
+# copying the deposited XYZ files (supercell construction, carving-centre
+# selection, spherical truncation at R=10..30; see create_scalar/carve.py)
+python -m create_scalar.create_scalar --raw-data scalar_raw --output scalar --from-cif
 ```
 
 If `scalar_raw` does not exist, the script looks for `scalar_raw.zip` and uses it. Zip input is extracted to a temporary directory and cleaned up after the run.

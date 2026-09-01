@@ -1,0 +1,23 @@
+name: scalar
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy=2.4.6
+  - scipy=1.17.1
+  - matplotlib=3.11.1
+  - tqdm=4.69.0
+  - ase=3.29.0
+  - spglib=2.7.0
+  - pip
+  - pip:
+      - python-dotenv==1.2.2
+      - torch==2.5.1
+      - torch-geometric==2.6.1
+      - torch-scatter==2.1.2
+      - torch-sparse==0.6.18
+      - torch-cluster==1.6.3
+      - torch-spline-conv==1.2.2

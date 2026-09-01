@@ -1,29 +1,3 @@
-#!/usr/bin/env python3
-"""
-Create scalar dataset from raw data.
-
-Takes scalar_raw (directory or zip file) as input and outputs scalar/ with:
-- unit_cells/  – CIF files
-- quaternions/ – rotated XYZ structures (Material/Rx/xyz/rot_*.xyz)
-
-Uses create_scalar.config and create_scalar.generate_quaternions (TARGET_TOTAL_FILES,
-SPLIT_FRACTIONS, MAX_ROTS_PER_FILE, etc.; no create_c2np).
-
-Usage:
-    python create_scalar.py --raw-data scalar_raw --output scalar
-    python create_scalar.py --raw-data scalar_raw.zip --output scalar
-
-Final output structure:
-    scalar/
-    ├── quaternions/
-    │   └── {Material}/
-    │       └── R{x}/
-    │           └── xyz/
-    │               └── rot_*.xyz
-    └── unit_cells/
-        └── {Material}.cif
-"""
-
 import argparse
 import os
 import shutil
@@ -31,17 +5,16 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from create_scalar.config import QUATERNIONS_SUBDIR, UNIT_CELLS_SUBDIR
+from create_scalar.config import QUATERNIONS_SUBDIR, UNIT_CELLS_SUBDIR, CARVE_R_MIN, CARVE_R_MAX, CARVE_DELTA_BOX
 from create_scalar.generate_quaternions import run_scalar_quaternions
+from create_scalar import carve
 
 
 def _is_macos_metadata(path: Path) -> bool:
-    """Check if path is a macOS metadata file (AppleDouble or __MACOSX)."""
     return path.name.startswith("._") or "__MACOSX" in path.parts
 
 
 def extract_cifs(raw_data_dir: Path, output_dir: Path) -> int:
-    """Extract all CIF files from raw_data to output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
     count = 0
 
@@ -59,7 +32,6 @@ def extract_cifs(raw_data_dir: Path, output_dir: Path) -> int:
 
 
 def extract_xyz_files(raw_data_dir: Path, output_dir: Path) -> int:
-    """Extract XYZ files from raw_data directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
     count = 0
 
@@ -86,12 +58,6 @@ def extract_xyz_files(raw_data_dir: Path, output_dir: Path) -> int:
 
 
 def extract_zip_if_needed(raw_data_path: Path) -> tuple[Path, bool]:
-    """
-    Extract zip file if needed, return path to data directory and cleanup flag.
-
-    Returns:
-        Tuple of (data_path, needs_cleanup)
-    """
     if raw_data_path.suffix.lower() in (".zip", ".zipx"):
         print(f"  Detected zip file: {raw_data_path.name}")
         print("  Extracting to temporary directory...")
@@ -102,14 +68,23 @@ def extract_zip_if_needed(raw_data_path: Path) -> tuple[Path, bool]:
     return raw_data_path, False
 
 
-def create_scalar(raw_data_dir: str = "scalar_raw", output_dir: str = "scalar") -> bool:
-    """
-    Create scalar dataset from raw data (directory or zip file).
+def carve_xyz_from_cifs(unit_cells_dir: Path, output_dir: Path, r_min: int = CARVE_R_MIN,
+                         r_max: int = CARVE_R_MAX, delta_box: float = CARVE_DELTA_BOX) -> int:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for cif_path in sorted(unit_cells_dir.glob("*.cif")):
+        if cif_path.name.startswith("._"):
+            continue
+        report = carve.carve_material(
+            cif_path, output_dir, material=cif_path.stem,
+            r_min=r_min, r_max=r_max, delta_box=delta_box,
+        )
+        count += len(report["written"])
+    return count
 
-    Args:
-        raw_data_dir: Path to raw data directory or zip file (scalar_raw or scalar_raw.zip)
-        output_dir: Path to output scalar directory
-    """
+
+def create_scalar(raw_data_dir: str = "scalar_raw", output_dir: str = "scalar",
+                   from_cif: bool = False) -> bool:
     print("\n" + "=" * 60)
     print("Creating scalar dataset from raw data")
     print("=" * 60)
@@ -151,8 +126,12 @@ def create_scalar(raw_data_dir: str = "scalar_raw", output_dir: str = "scalar") 
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_materials = Path(temp_dir) / "materials"
-            xyz_count = extract_xyz_files(data_path, temp_materials)
-            print(f"  Extracted {xyz_count} XYZ files")
+            if from_cif:
+                xyz_count = carve_xyz_from_cifs(unit_cells_dir, temp_materials)
+                print(f"  Carved {xyz_count} XYZ files from CIF (Phase-I)")
+            else:
+                xyz_count = extract_xyz_files(data_path, temp_materials)
+                print(f"  Extracted {xyz_count} XYZ files")
 
             print("\n" + "-" * 60)
             print("Step 3: Generating quaternion rotations")
@@ -216,11 +195,18 @@ Examples:
         default="scalar",
         help="Path to output directory (default: scalar)",
     )
+    parser.add_argument(
+        "--from-cif",
+        action="store_true",
+        help="Generate base XYZ structures via Phase-I carving from the deposited CIFs "
+             "instead of copying the deposited XYZ files",
+    )
 
     args = parser.parse_args()
     success = create_scalar(
         raw_data_dir=args.raw_data,
         output_dir=args.output,
+        from_cif=args.from_cif,
     )
     return 0 if success else 1
 

@@ -6,7 +6,16 @@ analysis_codes/
 results*/
 results.zip
 figs
+!digital_discovery_submission/figs/
 scalar
+scalar_raw/
+scalar_raw.zip
+handoff/
+figs_out/
+outputs/carve_validation/
+outputs/dataset_analyses_partial/
+.DS_Store
+.claude/
 # C extensions
 *.so
 
