@@ -9,10 +9,11 @@ install: ## Install production dependencies
 
 install-dev: ## Install development dependencies
 	pip install -r requirements.txt
+	pip install -r requirements-dev.txt
 
 format: ## Format code with black and isort
-	black models/ train/ dataloaders.py initial_utils/
-	isort models/ train/ dataloaders.py initial_utils/
+	black create_scalar/ experiments/ scripts/
+	isort create_scalar/ experiments/ scripts/
 
 clean: ## Clean up temporary files
 	find . -type f -name "*.pyc" -delete

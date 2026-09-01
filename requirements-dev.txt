@@ -1,0 +1,6 @@
+black==26.5.1
+isort==9.0.1
+jupyter==1.1.1
+ipykernel==7.3.0
+memory-profiler==0.61.0
+psutil==7.2.2
